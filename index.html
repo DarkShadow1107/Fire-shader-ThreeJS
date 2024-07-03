@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<title>Fire shader ThreeJS</title>
+		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/5.0.0/normalize.min.css" />
+		<link rel="stylesheet" href="css/style.css" />
+	</head>
+	<body>
+		<canvas class="webgl"></canvas>
+
+		<script type="x-shader/x-vertex" id="basicVert">
+			precision highp float;
+			varying vec2 vUv;
+			void main() {
+			    vUv = uv;
+			    vec4 modelViewPosition = modelViewMatrix * vec4(position, 1.0);
+			    gl_Position = projectionMatrix * modelViewPosition;
+			}
+		</script>
+
+		<script type="x-shader/x-fragment" id="rgbLightmapFrag">
+			uniform sampler2D map;
+			uniform float ratioR;
+			uniform float ratioG;
+			uniform float ratioB;
+			uniform float gamma;
+			varying vec2 vUv;
+			void main(void) {
+				vec4 tex = texture2D(map, vUv);
+			    // using RGB channels of the texture de vary the lighting
+			    float col = tex.r * ratioR + tex.g * ratioG + tex.b * ratioB;
+			    // adjust contrast
+				col = pow(col, gamma);
+				gl_FragColor = linearToOutputTexel(vec4(col, col, col, 1.));
+			}
+		</script>
+
+		<script type="x-shader/x-vertex" id="fireVert">
+			precision highp float;
+			uniform sampler2D noiseMap;
+			uniform float time;
+			uniform float intensity;
+			varying vec2 vUv;
+			void main() {
+				vUv = uv;
+			    // using a noise texture to displace the geometry
+			    vec4 noise = texture2D(noiseMap, vUv * .3 + vec2(0., -time * .2));
+
+				vec3 pos = position;
+			    pos.y *= intensity;
+
+				vec3 displacement = vec3(0., 0., 0.);
+			    displacement.z += (-.5 + noise.g) * .1 * vUv.y;
+			    displacement.y += (-.5 + noise.r) * .2 * vUv.y ;
+
+			    vec4 modelViewPosition = modelViewMatrix * vec4(pos + displacement, 1.0);
+			    gl_Position = projectionMatrix * modelViewPosition;
+			}
+		</script>
+
+		<script type="x-shader/x-fragment" id="fireFrag">
+			uniform sampler2D noiseMap;
+			uniform float time;
+			uniform float opacity;
+			uniform float stylizeRatio;
+			uniform float stylizeThreshold;
+			uniform float details;
+			uniform bool grayscale;
+			varying vec2 vUv;
+
+			float makeBorders(vec2 uv, float top, float left, float bottom, float right, float gradient){
+				float t = 1. - smoothstep(top, top + gradient, uv.y);
+				float b = smoothstep(bottom - gradient, bottom, uv.y);
+				float r = 1. - smoothstep(right, right + gradient, uv.x);
+				float l = smoothstep(left - gradient, left, uv.x);
+				return t*b*l*r;
+			}
+			void main(void) {
+			    // different noises are be used to create fire layers (red in the outside, yellow in the center, blue in in the inside)
+
+			    vec4 noiseCol1 = texture2D( noiseMap, vUv * vec2(2., 2.) + vec2(.0, -time * 3.));
+			    vec4 noiseCol2 = texture2D( noiseMap, vUv * vec2(3., 1.) + vec2(.0, -time));
+			    vec4 noiseCol3 = texture2D( noiseMap, vUv * vec2(1., 1.) + vec2(.0, -time*1.5));
+
+
+			    // Flames "holes" to avoid a fully filled shape
+			    float flameHoles = noiseCol3.r * noiseCol3.g; // combine 2 noises
+			    flameHoles += pow( 1. - vUv.y, 2.); // filling the bottom part, the holes should be more pronouced at the top
+			    flameHoles = smoothstep(.30,.6, flameHoles); // adding contrast
+
+			    // create main layers of the flame, red in the outside, yellow at the center, white in the inside.
+
+			    float red = noiseCol1.r + noiseCol1.g * .5 + noiseCol1.b * .25; // outside
+			    float green  = noiseCol1.r * makeBorders(vUv, .8, .4, .1, .6, .1); // center
+			    float blue = noiseCol1.r * makeBorders(vUv, .6, .5, .1, .5, .1); // inside
+
+			    // once combined red and green will look yellow. Red, green and blue combined will look white.
+				vec4 flame = vec4(red, green, blue, 1.);
+
+			    // adding details in the flame
+			    flame.r += (noiseCol2.r * noiseCol2.g * noiseCol2.b) * details;
+			    flame.g += (noiseCol2.r * noiseCol2.g * noiseCol2.b) * details;
+			    flame.b += (noiseCol2.r * noiseCol2.g * noiseCol2.b) * details;
+
+			    // stylise = flatten the colors
+				vec3 stylisedFlame = vec3(0.);
+				stylisedFlame.r = step(stylizeThreshold, flame.r);
+				stylisedFlame.g = step(stylizeThreshold, flame.g);
+				stylisedFlame.b = step(stylizeThreshold, flame.b);
+				flame.rgb = mix(flame.rgb, stylisedFlame, stylizeRatio);
+
+			    // blur borders, apply opacity and holes
+			    flame.rgb *= makeBorders(vUv, .7, .3, .4, .7, .25) * opacity * flameHoles;
+
+			    // grayscale
+				if (grayscale){
+					float flameValue = dot(flame.rgb, vec3(0.2, 0.3, 0.2));
+					flame = vec4(flameValue, flameValue, flameValue, 1.);
+				}
+
+				gl_FragColor = vec4(flame.rgb, 1.);
+			}
+		</script>
+
+		<script type="x-shader/x-fragment" id="ashesFrag">
+			uniform sampler2D noiseMap;
+			uniform float time;
+			varying vec2 vUv;
+
+			void main(void) {
+
+			  	vec4 noiseCol1 = texture2D( noiseMap, vUv * 2.2 + vec2(time*.1, -time*.9));
+			  	vec4 noiseCol2 = texture2D( noiseMap, vUv * 3. + vec2(.0, -time*1.6));
+
+			  	float ashes = 1. - (noiseCol1.r * noiseCol2.g * noiseCol2.b );
+				ashes += pow(vUv.y, 2.);
+				ashes = smoothstep(.65,.75, ashes);
+
+				gl_FragColor = vec4(ashes, ashes, ashes, 1.0);
+			}
+		</script>
+		<script type="module" src="js/script.js"></script>
+	</body>
+</html>
